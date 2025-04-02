@@ -1,32 +1,80 @@
 import express from 'express';
-import cors from 'cors';
-import { GoogleGenerativeAI } from "@google/generative-ai";
-import MarkdownIt from 'markdown-it';
+import { WebSocketServer } from 'ws';
+import path from "path";
+import { fileURLToPath } from "url";
+import cors from "cors";
 
-const genAI = new GoogleGenerativeAI("#");
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-
-const md = new MarkdownIt();
-
+const PORT = 5000;
 const app = express();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-// Middleware
-app.use(cors({ origin: 'http://localhost:5173' })); // Enable Cross-Origin Resource Sharing
-app.use(express.json()); // Allow JSON requests
+var arr = ['','','',''];
 
-// API Route
-app.get('/api/data1', async (req, res) => {
-    const prompt = "I am creating an app which detects if a fruit is rotten or not. For a sample test of a banana, my ML model gave detected ripe with 80% confidence. Gas sensor detected 50ppm of ethylene. ELectrical impedance analysis detected 2.5 ohms and piezoelectric sensor gave firmness output of 1.2N . What do you think is the fruit ripe or rotten? Give a detailed report of the analysis and the response should be in markdown format. ";
+app.use(cors({
+    origin: "http://localhost:5173",  // Allow React frontend
+    methods: ["GET", "POST"],         // Allow specific methods
+    allowedHeaders: ["Content-Type"]  // Allow specific headers
+}));
 
-    const result = await model.generateContent(prompt);
-    const htmlContent = md.render(result.response.text());
-    res.json({ message: htmlContent  });
-    console.log(result.response.text());
-    
+const wss = new WebSocketServer({ host: "0.0.0.0", port: 8080 });
+let receivedMessage = '';
+let waitingResolvers = [];
+wss.on('connection', (ws) => {
+    console.log('New client connected');
+
+    ws.on('message', (message) => {
+        console.log(`Received: ${message}`);
+        receivedMessage = message.toString();
+
+        // Respond to any waiting HTTP requests
+        waitingResolvers.forEach(resolve => resolve(receivedMessage));
+        waitingResolvers = []; // Clear the list after resolving
+    });
+
+    ws.on('close', () => {
+        console.log('Client disconnected');
+    });
 });
 
-// Start Server
-const PORT = 5000; // Change if needed
-app.listen(PORT, () => {
-    console.log(`Server is running on http://localhost:${PORT}`);
+app.get('/', (req, res) =>{
+    res.sendFile(__dirname+"/views/index.html");
+})
+
+app.post('/send', (req,res)=>{
+    const  message  = "Hello World";
+    if (!message) {
+        return res.status(400).json({ error: 'Message is required' });
+    }
+
+    // Broadcast message to all WebSocket clients
+    wss.clients.forEach(client => {
+        if (client.readyState === 1) {
+            client.send(message);
+        }
+    });
+
+    res.json({ status: 'Message sent' });
+})
+
+let index = 0;
+
+app.get('/receive', async (req, res) => {
+    if (receivedMessage) {
+        const messageToSend = receivedMessage;
+        receivedMessage = null;  // ✅ Reset after sending
+        return res.json({ message: messageToSend });
+    }
+
+    console.log('Waiting for a WebSocket message...');
+    const message = await new Promise((resolve) => {
+        waitingResolvers.push(resolve);
+    });
+
+    res.json({ message });
 });
+
+app.listen(PORT,'0.0.0.0', () => {
+    console.log(`Server is running on port ${PORT}`);
+})
+
